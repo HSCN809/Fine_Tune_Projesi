@@ -1,0 +1,10 @@
+env/
+models/
+__pycache__/
+*.pyc
+data/
+logs/
+results/
+notebooks/
+*.ipynb_checkpoints
+ipynb_checkpoints/
