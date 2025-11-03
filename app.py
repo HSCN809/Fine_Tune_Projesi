@@ -6,6 +6,28 @@ import subprocess
 import sys
 import os
 from typing import Dict, Any
+import threading
+from fastapi import FastAPI
+import uvicorn
+
+# --- BACKEND INTEGRATION ---
+def start_fastapi_backend():
+    """FastAPI backend'ini thread içinde başlat"""
+    uvicorn.run(
+        "backend.app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        log_level="warning"
+    )
+
+def is_backend_running():
+    """Backend'in çalışıp çalışmadığını kontrol et"""
+    try:
+        response = requests.get("http://localhost:8000/health", timeout=2)
+        return response.status_code == 200
+    except:
+        return False
 
 # Sayfa ayarları
 st.set_page_config(
@@ -229,87 +251,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-class BackendManager:
-    """Backend süreç yöneticisi"""
-    
-    def __init__(self):
-        self.process = None
-        self.port = 8000
-        self.base_url = f"http://localhost:{self.port}"
-        self.backend_dir = "backend"
-    
-    def is_backend_running(self) -> bool:
-        """Backend'in çalışıp çalışmadığını kontrol et - API health check kaldırıldı"""
-        try:
-            # Sadece portun dinlenip dinlenmediğini kontrol et
-            import socket
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            result = sock.connect_ex(('localhost', self.port))
-            sock.close()
-            return result == 0
-        except:
-            return False
-    
-    def start_backend(self) -> bool:
-        """Backend'i başlat"""
-        try:
-            if self.is_backend_running():
-                return True
-            
-            if not os.path.exists(self.backend_dir):
-                st.error(f"❌ Backend dizini bulunamadı: {self.backend_dir}")
-                return False
-            
-            backend_script = os.path.join(self.backend_dir, "run.py")
-            if not os.path.exists(backend_script):
-                st.error(f"❌ Backend script'i bulunamadı: {backend_script}")
-                return False
-            
-            self.process = subprocess.Popen(
-                [sys.executable, backend_script],
-                cwd=self.backend_dir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            # Başlatma animasyonu
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            for i in range(15):  # 15 saniyeye düşürüldü
-                time.sleep(1)
-                progress = (i + 1) / 15
-                progress_bar.progress(progress)
-                status_text.text(f"🔄 Backend başlatılıyor... {int(progress * 100)}%")
-                
-                if self.is_backend_running():
-                    progress_bar.progress(1.0)
-                    status_text.text("✅ Backend başarıyla başlatıldı!")
-                    time.sleep(1)
-                    status_text.empty()
-                    return True
-            
-            st.error("❌ Backend başlatma zaman aşımına uğradı")
-            return False
-            
-        except Exception as e:
-            st.error(f"❌ Backend başlatma hatası: {str(e)}")
-            return False
-    
-    def stop_backend(self) -> bool:
-        """Backend'i durdur"""
-        try:
-            if self.process:
-                self.process.terminate()
-                self.process.wait(timeout=5)
-                self.process = None
-                return True
-            return True
-        except Exception as e:
-            st.error(f"❌ Backend durdurma hatası: {str(e)}")
-            return False
-
 class SentimentAPIClient:
     """Sentiment Analysis API istemci sınıfı"""
     
@@ -338,14 +279,14 @@ class SentimentAPIClient:
 
 def init_session_state():
     """Session state değişkenlerini başlat"""
-    if 'backend_manager' not in st.session_state:
-        st.session_state.backend_manager = BackendManager()
     if 'api_client' not in st.session_state:
         st.session_state.api_client = SentimentAPIClient()
     if 'last_sentiment' not in st.session_state:
         st.session_state.last_sentiment = None
     if 'analysis_history' not in st.session_state:
         st.session_state.analysis_history = []
+    if 'backend_started' not in st.session_state:
+        st.session_state.backend_started = False
     # Cache değişkenleri
     if 'models_cache' not in st.session_state:
         st.session_state.models_cache = None
@@ -369,34 +310,25 @@ def cached_get_models():
 
 def render_backend_control():
     """Backend kontrol panelini oluştur"""
-    st.markdown('<div class="sub-header">⚙️ Backend Kontrol Paneli</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">⚙️ Sistem Durumu</div>', unsafe_allow_html=True)
     
-    manager = st.session_state.backend_manager
-    is_running = manager.is_backend_running()
+    is_running = is_backend_running()
     
     col1, col2 = st.columns([2, 1])
     
     with col1:
         if is_running:
-            st.markdown('<div class="status-running">🎯 BACKEND AKTİF - Sistem Hazır</div>', unsafe_allow_html=True)
+            st.markdown('<div class="status-running">🎯 SİSTEM AKTİF - Analiz Hazır</div>', unsafe_allow_html=True)
         else:
-            st.markdown('<div class="status-stopped">💤 BACKEND DURAKLATILDI</div>', unsafe_allow_html=True)
+            st.markdown('<div class="status-stopped">🔄 SİSTEM HAZIRLANIYOR...</div>', unsafe_allow_html=True)
     
     with col2:
         if is_running:
-            if st.button("🛑 Durdur", use_container_width=True, type="secondary"):
-                with st.spinner("Sistem durduruluyor..."):
-                    if manager.stop_backend():
-                        # Cache'leri temizle
-                        st.session_state.models_cache = None
-                        st.success("✅ Backend durduruldu!")
-                        time.sleep(1)
-                        st.rerun()
+            st.button("✅ Sistem Hazır", use_container_width=True, disabled=True)
         else:
-            if st.button("🚀 Başlat", use_container_width=True, type="primary"):
-                if manager.start_backend():
-                    st.session_state.api_client = SentimentAPIClient()
-                    st.rerun()
+            with st.spinner("Backend başlatılıyor..."):
+                time.sleep(1)
+                st.rerun()
 
 def render_sidebar():
     """Sidebar içeriğini oluştur"""
@@ -406,7 +338,7 @@ def render_sidebar():
         
         render_backend_control()
         
-        if st.session_state.backend_manager.is_backend_running():
+        if is_backend_running():
             # Model bilgileri - CACHE'Lİ
             st.markdown("---")
             st.subheader("🤖 Model Bilgileri")
@@ -466,13 +398,15 @@ def render_sentiment_analysis():
         </div>
         """, unsafe_allow_html=True)
     
-    if not st.session_state.backend_manager.is_backend_running():
+    if not is_backend_running():
         st.warning("""
-        ⚠️ **Sistem Hazır Değil** 
+        ⚠️ **Sistem Hazırlanıyor** 
         
-        Sentiment analizi için backend sisteminin çalışıyor olması gerekiyor. 
-        Lütfen sol taraftaki kontrol panelinden backend'i başlatın.
+        Backend sistemi başlatılıyor, lütfen birkaç saniye bekleyin...
+        Otomatik olarak yenilenecektir.
         """)
+        time.sleep(2)
+        st.rerun()
         return
     
     # Ana input alanı
@@ -607,15 +541,36 @@ def main():
     
     init_session_state()
     
-    # Otomatik backend başlatma
-    if not st.session_state.backend_manager.is_backend_running():
+    # Backend'i otomatik başlat (sadece ilk seferde)
+    if not st.session_state.backend_started and not is_backend_running():
+        st.session_state.backend_started = True
+        # Backend'i thread'de başlat
+        backend_thread = threading.Thread(target=start_fastapi_backend, daemon=True)
+        backend_thread.start()
+        
+        # Başlatma mesajı
         with st.container():
-            st.info("🔄 Backend sistemi başlatılıyor...")
-            if st.session_state.backend_manager.start_backend():
-                st.session_state.api_client = SentimentAPIClient()
-                st.success("✅ Sistem hazır! Analize başlayabilirsiniz.")
+            st.info("🚀 Backend sistemi başlatılıyor... Bu ilk seferde 30-60 saniye sürebilir.")
+            
+            # İlerleme çubuğu
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Backend'in hazır olmasını bekle
+            for i in range(30):  # Maksimum 30 saniye bekle
                 time.sleep(1)
-                st.rerun()
+                progress = (i + 1) / 30
+                progress_bar.progress(progress)
+                status_text.text(f"🔄 Model yükleniyor... {int(progress * 100)}%")
+                
+                if is_backend_running():
+                    progress_bar.progress(1.0)
+                    status_text.text("✅ Sistem hazır! Analize başlayabilirsiniz.")
+                    time.sleep(2)
+                    st.rerun()
+                    break
+            else:
+                st.error("❌ Backend başlatma zaman aşımına uğradı. Lütfen sayfayı yenileyin.")
     
     render_sidebar()
     render_sentiment_analysis()
